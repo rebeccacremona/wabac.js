@@ -5,6 +5,10 @@ import { CDXLoader } from './cdxloader';
 import { getTS } from './utils';
 import { LiveAccess } from './remoteproxy';
 
+import { createLoader } from './blockloaders';
+
+import { ZIMIndexLoader, ZIMLoader } from './zimloader';
+
 import yaml from 'js-yaml';
 import { csv2jsonAsync } from 'json-2-csv';
 
@@ -20,6 +24,12 @@ class ZipRemoteArchiveDB extends RemoteSourceArchiveDB
     this.fuzzyUrlRules = [];
     this.useSurt = true;
     this.fullConfig = fullConfig;
+
+    this.zim = this.fullConfig.metadata && this.fullConfig.metadata.zim;
+    if (this.zim) {
+      this.zim.prefix = "http://zim/"; + this.zim.filename.slice(this.zim.filename.lastIndexOf("/"));
+    }
+    this.zimClusterCache = {};
 
     //todo: make this configurable by user?
     sourceLoader.canLoadOnDemand = true;
@@ -250,6 +260,9 @@ class ZipRemoteArchiveDB extends RemoteSourceArchiveDB
     }
 
     const metadata = {desc: root.desc, title: root.title};
+    if (root.zim) {
+      metadata.zim = root.zim;
+    }
 
     // All pages
     const pages = root.pages || [];
@@ -276,6 +289,7 @@ class ZipRemoteArchiveDB extends RemoteSourceArchiveDB
     let filename;
     let offset = 0;
     let length = -1;
+    let fileStream;
 
     const source = cdx.source;
 
@@ -290,9 +304,37 @@ class ZipRemoteArchiveDB extends RemoteSourceArchiveDB
     }
 
     let loader = null;
-   
-    const fileStream = await this.zipreader.loadFileCheckDirs(filename, offset, length);
-    loader = new SingleRecordWARCLoader(fileStream);
+
+    if (this.zim) {
+      filename = this.zim.filename;
+      let fullCluster = null;
+      let reader = null;
+
+      if (offset && length) {
+        const key = offset + "-" + length;
+        if (!source.d_len || !this.zimClusterCache[key]) {
+          if (filename.startsWith("http:") || filename.startsWith("https:")) {
+            reader = createLoader(filename);
+            fullCluster = await reader.getRange(offset, length);
+          } else {
+            reader = await this.zipreader.loadFileCheckDirs(filename, offset, length);
+            fullCluster = await reader.readFully();
+          }
+
+          if (source.d_len) {
+            this.zimClusterCache[key] = fullCluster;
+          }
+        } else {
+          fullCluster = this.zimClusterCache[key];
+        }
+      }
+
+      loader = new ZIMLoader(fullCluster, cdx, this.zim.prefix);
+
+    } else {
+      const fileStream = await this.zipreader.loadFileCheckDirs(filename, offset, length);
+      loader = new SingleRecordWARCLoader(fileStream);
+    }
 
     return await loader.load();
   }
@@ -325,17 +367,22 @@ class ZipRemoteArchiveDB extends RemoteSourceArchiveDB
     let prefix;
     let checkPrefix;
 
-    const surt = this.useSurt ? this.getSurt(url) : url;
+    if (this.zim) {
+      prefix = url.startsWith(this.zim.prefix) ? url.slice(this.zim.prefix.length) : url;
+      checkPrefix = prefix;
+    } else {
+      const surt = this.useSurt && !this.zim ? this.getSurt(url) : url;
 
-    prefix = surt + " 9";
-    checkPrefix = surt;
+      prefix = surt + " 9";
+      checkPrefix = surt;
+    }
 
     const tx = this.db.transaction("ziplines", "readonly");
 
     const values = [];
 
     // and first match
-    const key = IDBKeyRange.upperBound(prefix, false);
+    const key = IDBKeyRange.upperBound(prefix, true);
 
     for await (const cursor of tx.store.iterate(key, "prev")) {
       // add to beginning as processing entries in reverse here
@@ -358,7 +405,11 @@ class ZipRemoteArchiveDB extends RemoteSourceArchiveDB
       const params = {offset: zipblock.offset, length: zipblock.length, unzip: true}
       const reader = await this.zipreader.loadFile(filename, params);
 
-      cdxloaders.push(new CDXLoader(reader).load(this));
+      if (this.zim) {
+        cdxloaders.push(new ZIMIndexLoader(reader, this.zim.prefix, this.zim.mimetypes).load(this));
+      } else {
+        cdxloaders.push(new CDXLoader(reader).load(this));
+      }
 
       zipblock.loaded = true;
       await this.db.put("ziplines", zipblock);
@@ -407,6 +458,10 @@ class ZipRemoteArchiveDB extends RemoteSourceArchiveDB
 
   async lookupUrl(url, datetime, opts = {}) {
     try {
+      if (this.zim) {
+        url = decodeURIComponent(url);
+      }
+
       let result = await super.lookupUrl(url, datetime, opts);
 
       if (result && (!opts.noRevisits || result.mime !== "warc/revisit")) {

@@ -16,6 +16,10 @@ module.exports = {
     publicPath: '/dist/'
   },
 
+  node: {
+    'fs': 'empty'
+  },
+
   devServer: {
     compress: true,
     port: 9990,

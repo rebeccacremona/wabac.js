@@ -5,7 +5,7 @@ import { isNullBodyStatus, decodeLatin1, encodeLatin1, MAX_STREAM_CHUNK_SIZE } f
 class ArchiveResponse
 {
 
-  static fromResponse({url, response, date, noRW, isLive}) {
+  static fromResponse({url, response, date, noRW, isLive, overrideTS}) {
     const payload = response.body ? new AsyncIterReader(response.body.getReader(), false) : null;
     const status = Number(response.headers.get("x-redirect-status") || response.status);
     const statusText = response.headers.get("x-redirect-statusText") || response.statusText;
@@ -16,6 +16,7 @@ class ArchiveResponse
     if (origLoc) {
       headers.set("location", origLoc);
     }
+    overrideTS = headers.get("x-orig-ts") || overrideTS;
 
     const cookie = (headers.get("x-proxy-set-cookie"));
     if (cookie) {
@@ -33,10 +34,10 @@ class ArchiveResponse
       }
     }
 
-    return new ArchiveResponse({payload, status, statusText, headers, url, date, noRW, isLive});
+    return new ArchiveResponse({payload, status, statusText, headers, url, date, noRW, isLive, overrideTS});
   }
 
-  constructor({payload, status, statusText, headers, url, date, extraOpts = null, noRW = false, isLive = false}) {
+  constructor({payload, status, statusText, headers, url, date, extraOpts = null, noRW = false, isLive = false, overrideTS = null}) {
     this.reader = null;
     this.buffer = null;
 
@@ -54,6 +55,7 @@ class ArchiveResponse
     this.extraOpts = extraOpts;
     this.noRW = noRW;
     this.isLive = isLive;
+    this.overrideTS = overrideTS;
   }
 
   async getText() {

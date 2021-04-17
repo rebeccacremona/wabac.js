@@ -184,6 +184,9 @@ class Collection {
     }
 
     if (!response.noRW) {
+      if (response.overrideTS) {
+        requestTS = response.overrideTS;
+      }
       const basePrefix = this.prefix + (pageId ? `:${pageId}/` : "");
       const basePrefixTS = basePrefix + requestTS;
 

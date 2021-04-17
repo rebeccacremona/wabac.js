@@ -8,6 +8,8 @@ import { WARCParser, AsyncIterReader } from "warcio";
 
 const EXTRACT_TS = /(?:([\d]+)[^/]*\/)?(http.*)/;
 
+const MATCH_TS_URL = /([\d]+)\/(https?:.*)/;
+
 
 // ===========================================================================
 class RemoteWARCProxy {
@@ -249,7 +251,7 @@ class LiveAccess {
 
     this.prefix = extraConfig.prefix || "";
     this.proxyPathOnly = extraConfig.proxyPathOnly || false;
-    this.isLive = extraConfig.isLive !== undefined ? extraConfig.isLive : true;
+    //this.isLive = extraConfig.isLive !== undefined ? extraConfig.isLive : true;
     this.archivePrefix = extraConfig.archivePrefix || "";
   }
 
@@ -262,17 +264,20 @@ class LiveAccess {
     const { headers, credentials, url} = resolveRequestParams(request, prefix);
 
     let fetchUrl;
+    let isLive;
 
     if (this.proxyPathOnly) {
       const parsedUrl = new URL(url);
       fetchUrl = this.prefix + parsedUrl.pathname + parsedUrl.search;
-    } else if (this.isLive || !request.timestamp) {
+    } else if (!request.timestamp) {
       fetchUrl = this.prefix + url;
+      isLive = true;
     } else {
       fetchUrl = this.prefix + this.archivePrefix + request.timestamp + "id_/" + url;
+      isLive = false;
     }
 
-    const response = await fetch(fetchUrl,
+    let response = await fetch(fetchUrl,
       {method: request.request.method,
         body: request.request.body,
         headers,
@@ -281,11 +286,32 @@ class LiveAccess {
         redirect: "follow"
       });
 
+    let m = null;
+
+    let overrideTS = null;
+
+    if (isLive && response.headers.get("memento-datetime") && (m = fetchUrl.match(MATCH_TS_URL))) {
+      fetchUrl = this.prefix + url.slice(0, url.indexOf(m[1])) + m[1] + "id_/" + m[2];
+      isLive = false;
+
+      response = await fetch(fetchUrl,
+        {method: request.request.method,
+          body: request.request.body,
+          headers,
+          credentials,
+          mode: "cors",
+          redirect: "follow"
+        });
+
+      //overrideTS = m[1];
+    }
+
     return ArchiveResponse.fromResponse({url,
       response,
       date: new Date(),
       noRW: false,
-      isLive: this.isLive,
+      isLive,
+      overrideTS
     });
   }
 }
@@ -299,7 +325,12 @@ function resolveRequestParams(request, prefix, isLive = true) {
   if (isLive) {
     headers = new Headers(request.request.headers);
     referrer = request.request.referrer;
-    const inx = referrer.indexOf("/http", prefix.length - 1);
+
+    let inx = referrer.indexOf("/http", prefix.length - 1);
+    if (inx < 0) {
+      referrer = request.request.url;
+      inx = referrer.indexOf("/http", prefix.length - 1);
+    }
     if (inx > 0) {
       referrer = referrer.slice(inx + 1);
       headers.set("X-Proxy-Referer", referrer);

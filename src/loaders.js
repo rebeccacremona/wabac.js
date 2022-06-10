@@ -32,8 +32,10 @@ class CollectionLoader
   }
 
   async _initDB() {
-    this.colldb = await openDB("collDB", 1, {
+    console.log(`_initDB called at ${Date.now()}`);
+    this.colldb = await openDB("collDB", 2, {
       upgrade: (db/*, oldV, newV, tx*/) => {
+        console.log(`collDB's upgrade handler called at ${Date.now()}`)
         const collstore = db.createObjectStore("colls", {keyPath: "name"});
 
         collstore.createIndex("type", "type");
@@ -78,9 +80,10 @@ class CollectionLoader
     await this._init_db;
     const data = await this.colldb.get("colls", name);
     if (!data) {
+      console.log("Collection not found.")
       return null;
     }
-
+    console.log("Collection found, loading it up!")
     return await this._initColl(data);
   }
 
@@ -307,18 +310,23 @@ class WorkerLoader extends CollectionLoader
       let res;
 
       try {
+        console.log("Checking collDB for collection");
         res = await this.colldb.get("colls", name);
         if (res) {
+          console.log("It exists!");
           if (!event.data.skipExisting) {
             await this.deleteColl(name);
             res = await this.addCollection(event.data, progressUpdate);
           }
         } else {
+          console.log("It doesn't exist: trying again.");
           res = await this.addCollection(event.data, progressUpdate);
         }
   
         if (!res) {
+          console.log("Nope, we never got the collection.");
           if (event.data.name) {
+            console.log(event.data);
             try {
               await deleteDB("db:" + event.data.name, {
                 blocked(reason) {
@@ -342,6 +350,7 @@ class WorkerLoader extends CollectionLoader
         return;
       }
 
+      console.log(`We are posting the message collAdded, name ${name} at url ${res.config.sourceUrl}`)
       client.postMessage({
         msg_type: "collAdded",
         name,
